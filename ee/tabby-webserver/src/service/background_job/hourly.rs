@@ -12,7 +12,7 @@ use tabby_schema::{
 
 use super::helper::Job;
 use crate::service::background_job::{
-    db::DbMaintainanceJob, IndexGarbageCollection, SchedulerGitJob, SchedulerGithubGitlabJob,
+    db::DbMaintenanceJob, IndexGarbageCollection, SchedulerGitJob, SchedulerGithubGitlabJob,
     SyncIntegrationJob,
 };
 
@@ -36,8 +36,8 @@ impl HourlyJob {
     ) -> tabby_schema::Result<()> {
         let now = Utc::now();
 
-        if let Err(err) = DbMaintainanceJob::cron(now, context_service.clone(), db.clone()).await {
-            logkit::warn!("Database maintainance failed: {:?}", err);
+        if let Err(err) = DbMaintenanceJob::cron(now, context_service.clone(), db.clone()).await {
+            logkit::warn!("Database maintenance failed: {:?}", err);
         }
 
         if let Err(err) =
