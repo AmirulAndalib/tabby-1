@@ -14,6 +14,7 @@ import com.intellij.openapi.editor.colors.EditorColorsScheme
 import com.intellij.openapi.editor.markup.TextAttributes
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.ui.popup.JBPopupFactory
 import com.intellij.psi.PsiFile
 import com.intellij.ui.components.IconLabelButton
@@ -34,6 +35,10 @@ import javax.swing.BorderFactory
 import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.JTextArea
+import com.intellij.codeInsight.codeVision.settings.CodeVisionSettings
+import com.intellij.codeInsight.hints.settings.InlaySettingsConfigurable
+import com.intellij.openapi.options.ShowSettingsUtil
+import com.tabbyml.intellijtabby.actions.chat.isChatFeatureEnabled
 
 class InlineChatIntentionAction : BaseIntentionAction(), DumbAware {
     private var inlay: Inlay<InlineChatInlayRenderer>? = null
@@ -45,18 +50,18 @@ class InlineChatIntentionAction : BaseIntentionAction(), DumbAware {
     }
 
     override fun isAvailable(project: Project, editor: Editor?, file: PsiFile?): Boolean {
-        return true;
+        return editor != null && isChatFeatureEnabled(project);
     }
 
     override fun invoke(project: Project, editor: Editor?, file: PsiFile?) {
         val inlineChatService = project.serviceOrNull<InlineChatService>() ?: return
-        if (inlineChatService.inlineChatEditing) return
-        inlineChatService.inlineChatEditing = true
+        if (inlineChatService.inlineChatInputVisible || inlineChatService.hasDiffAction) return
         this.project = project
         this.editor = editor
         if (editor != null) {
             val locationInfo = getCurrentLocation(editor = editor)
             inlineChatService.location = locationInfo.location
+            inlineChatService.inlineChatInputVisible = true
             addInputToEditor(project, editor, locationInfo.startOffset);
         }
 
@@ -83,7 +88,7 @@ class InlineChatIntentionAction : BaseIntentionAction(), DumbAware {
     private fun onClose() {
         inlay?.dispose()
         val inlineChatService = project?.serviceOrNull<InlineChatService>() ?: return
-        inlineChatService.inlineChatEditing = false
+        inlineChatService.inlineChatInputVisible = false
     }
 
     private fun onInputSubmit(value: String) {
@@ -151,8 +156,10 @@ class InlineChatInlayRenderer(
         if (disposed) {
             return
         }
+        val visibleArea = editor.scrollingModel.visibleArea
         if (this.targetRegion == null) {
             this.targetRegion = targetRegion
+            this.targetRegion?.y = targetRegion.y + visibleArea.y
         }
         val firstTargetRegion = this.targetRegion ?: targetRegion
         inlineChatComponent.setSize(firstTargetRegion.width, firstTargetRegion.height)
@@ -162,8 +169,6 @@ class InlineChatInlayRenderer(
             editor.contentComponent.add(inlineChatComponent)
             inlineChatComponent.requestFocus()
         }
-
-        inlineChatComponent.repaint()
     }
 
     fun repaint() {
@@ -339,6 +344,22 @@ class InlineInputComponent(
     }
 
     private fun handleConfirm() {
+        val codeVisionSettings = CodeVisionSettings.instance()
+        if (!codeVisionSettings.isProviderEnabled("Tabby.InlineEdit")) {
+            val result = Messages.showOkCancelDialog(
+                project,
+                "Tabby Inline Edit Code Vision feature is not enabled. Please enable it in Settings > Editor > Inlay Hint > Code Vision > Tabby Inline Edit.",
+                "Tabby Inline Edit Code Vision Disabled",
+                "Open Settings",
+                "Cancel",
+                Messages.getWarningIcon()
+            )
+            if (result == Messages.OK) {
+                ShowSettingsUtil.getInstance().showSettingsDialog(project, InlaySettingsConfigurable::class.java)
+            }
+            textArea.text = textArea.text.trim()
+            return
+        }
         onSubmit(textArea.text.trim())
         textArea.text = ""
     }
@@ -361,22 +382,30 @@ class InlineInputComponent(
 
     private fun handleOpenHistory() {
         val commandItems = getCommandList()
-        commandListComponent = CommandListComponent("Select Command", commandItems, { textArea.text = it.value }, {
+        var popup: com.intellij.openapi.ui.popup.JBPopup? = null
+        commandListComponent = CommandListComponent("Select Command", commandItems, {
+            textArea.text = it.value
+            popup?.cancel()
+        }, {
             history?.deleteCommand(it.value)
-            refreshCommandList()
+            refreshCommandList() {
+                popup?.pack(true, true)
+            }
         }, {
             history?.clearHistory()
-            refreshCommandList()
+            refreshCommandList() {
+                popup?.pack(true, true)
+            }
         })
-        val popup =
+        popup =
             JBPopupFactory.getInstance().createComponentPopupBuilder(commandListComponent?.component!!, JPanel())
                 .createPopup()
         popup.showUnderneathOf(this)
     }
 
-    private fun refreshCommandList() {
+    private fun refreshCommandList(onUpdated: (() -> Unit)? = null) {
         val commandItems = getCommandList()
-        commandListComponent?.setData(commandItems)
+        commandListComponent?.setData(commandItems, onUpdated)
     }
 
     private fun getHistoryCommand(): List<InlineEditCommand> {
